@@ -1,0 +1,318 @@
+# Water-Quality-Index-Prediction-Using-ML-XGBoost-RF-LSTM-
+# JUPYTER NOTEBOOK (run cell-by-cell)
+
+
+# ================================
+# 0) Setup & Imports
+# ================================
+import sys, os, math, warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+
+# Try optional libs
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+except Exception as e:
+    HAS_XGB = False
+
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from tensorflow.keras import layers
+    HAS_TF = True
+except Exception as e:
+    HAS_TF = False
+
+print("Python:", sys.version)
+print("Pandas:", pd.__version__)
+print("NumPy:", np.__version__)
+print("XGBoost available:", HAS_XGB)
+print("TensorFlow available:", HAS_TF)
+
+
+# ================================
+# 1) Generate Synthetic Data
+# ================================
+# We simulate monthly measurements with trends, seasonality, and noise.
+
+np.random.seed(42)
+
+n_months = 900   # >100 data points (you can increase)
+dates = pd.date_range("2010-01-01", periods=n_months, freq="MS")
+
+# Helper: seasonal pattern
+def seasonal(n, period=12, amplitude=1.0, phase=0.0):
+    t = np.arange(n)
+    return amplitude * np.sin(2*np.pi*(t/period) + phase)
+
+# Helper: smooth trend
+def trend(n, slope=0.0, start=0.0):
+    return start + slope*np.arange(n)
+
+# Create features with realistic ranges and relationships
+temp = 20 + seasonal(n_months, period=12, amplitude=5, phase=0.5) + np.random.normal(0, 1.2, n_months)
+turbidity = np.clip(5 + 3*seasonal(n_months, 6, 1.0) + np.random.normal(0, 1.4, n_months) + 0.02*trend(n_months, 0.05), 0, None)
+ph = np.clip(7.2 + 0.2*seasonal(n_months, 12, 1.0, 1.0) + np.random.normal(0, 0.08, n_months), 6.2, 8.8)
+do = np.clip(8.5 - 0.25*(temp-20) + np.random.normal(0, 0.4, n_months), 2.5, 14.0)  # colder water holds more O2
+bod = np.clip(2.5 + 0.5*seasonal(n_months, 12, 1.0, 2.0) + np.random.normal(0, 0.4, n_months) + 0.02*turbidity, 0.5, None)
+cod = np.clip(10 + 2.2*seasonal(n_months, 12, 1.0, 2.5) + np.random.normal(0, 1.6, n_months) + 1.5*bod, 2, None)
+nitrate = np.clip(2.0 + 0.8*seasonal(n_months, 12, 1.0, 0.2) + np.random.normal(0, 0.3, n_months) + 0.03*turbidity, 0, None)
+phosphate = np.clip(0.4 + 0.15*seasonal(n_months, 12, 1.0, 0.8) + np.random.normal(0, 0.05, n_months) + 0.01*turbidity, 0, None)
+tds = np.clip(150 + 40*seasonal(n_months, 12, 1.0, 1.4) + np.random.normal(0, 20, n_months) + 3.0*temp, 50, None)
+conductivity = np.clip(300 + 1.5*tds + np.random.normal(0, 30, n_months), 100, None)
+fecal_coliform = np.clip(30 + 8*seasonal(n_months, 12, 1.0, 2.1) + np.random.normal(0, 6, n_months) + 1.5*turbidity, 0, None)
+
+# Construct DataFrame
+df = pd.DataFrame({
+    "date": dates,
+    "temperature_C": temp,
+    "turbidity_NTU": turbidity,
+    "pH": ph,
+    "DO_mg_L": do,
+    "BOD_mg_L": bod,
+    "COD_mg_L": cod,
+    "nitrate_mg_L": nitrate,
+    "phosphate_mg_L": phosphate,
+    "TDS_mg_L": tds,
+    "conductivity_uS_cm": conductivity,
+    "fecal_coliform_CFU_100mL": fecal_coliform
+})
+
+# Synthetic Water Quality Index (WQI): Weighted combo (lower is worse) + noise, clipped to [0, 100]
+# This is illustrative, not a regulatory formula.
+# Higher DO and near-neutral pH improve WQI; high turbidity, BOD/COD, nutrients, microbes, TDS worsen it.
+wqi = (
+    12 +                                   # base
+    8*np.clip(1 - np.abs(df["pH"]-7.0)/1.5, 0, 1) +
+    15*np.clip(df["DO_mg_L"]/12, 0, 1) +
+    -8*np.tanh(df["turbidity_NTU"]/15) +
+    -10*np.tanh(df["BOD_mg_L"]/6) +
+    -10*np.tanh(df["COD_mg_L"]/40) +
+    -6*np.tanh(df["nitrate_mg_L"]/6) +
+    -6*np.tanh(df["phosphate_mg_L"]/0.8) +
+    -8*np.tanh(df["fecal_coliform_CFU_100mL"]/150) +
+    -5*np.tanh(df["TDS_mg_L"]/600)
+)
+wqi = np.clip(wqi + np.random.normal(0, 2.0, n_months), 0, 100)
+df["WQI"] = wqi
+
+# Save dataset
+os.makedirs("artifacts", exist_ok=True)
+csv_path = "artifacts/water_quality_synthetic.csv"
+xlsx_path = "artifacts/water_quality_synthetic.xlsx"
+df.to_csv(csv_path, index=False)
+df.to_excel(xlsx_path, index=False)
+df.head()
+
+
+# ================================
+# 2) Train/Test Split (chronological)
+# ================================
+# For time series, keep chronology: first 80% train, last 20% test
+df_sorted = df.sort_values("date").reset_index(drop=True)
+features = ["temperature_C","turbidity_NTU","pH","DO_mg_L","BOD_mg_L","COD_mg_L",
+            "nitrate_mg_L","phosphate_mg_L","TDS_mg_L","conductivity_uS_cm",
+            "fecal_coliform_CFU_100mL"]
+target = "WQI"
+
+split_idx = int(0.8 * len(df_sorted))
+train_df = df_sorted.iloc[:split_idx]
+test_df  = df_sorted.iloc[split_idx:]
+
+X_train = train_df[features].values
+y_train = train_df[target].values
+X_test  = test_df[features].values
+y_test  = test_df[target].values
+
+print(f"Train size: {len(train_df)}, Test size: {len(test_df)}")
+
+
+# ================================
+# 3) Random Forest Regressor
+# ================================
+rf = RandomForestRegressor(
+    n_estimators=400,
+    max_depth=None,
+    random_state=42,
+    n_jobs=-1
+)
+rf.fit(X_train, y_train)
+rf_pred = rf.predict(X_test)
+
+def eval_and_print(name, y_true, y_pred):
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = math.sqrt(mean_squared_error(y_true, y_pred))
+    r2 = r2_score(y_true, y_pred)
+    print(f"{name} -> MAE: {mae:.3f} | RMSE: {rmse:.3f} | R²: {r2:.3f}")
+    return mae, rmse, r2
+
+_ = eval_and_print("RandomForest", y_test, rf_pred)
+
+# Plot Actual vs Predicted
+plt.figure(figsize=(8,5))
+plt.scatter(y_test, rf_pred, alpha=0.6)
+plt.plot([0,100],[0,100], linestyle="--")
+plt.xlabel("Actual WQI")
+plt.ylabel("Predicted WQI")
+plt.title("RandomForest: Actual vs Predicted")
+plt.show()
+
+# Feature importance
+rf_importance = pd.Series(rf.feature_importances_, index=features).sort_values(ascending=False)
+plt.figure(figsize=(8,5))
+rf_importance.plot(kind="bar")
+plt.title("RandomForest Feature Importance")
+plt.ylabel("Importance")
+plt.tight_layout()
+plt.show()
+
+
+# ================================
+# 4) XGBoost Regressor (optional)
+# ================================
+if HAS_XGB:
+    xgb_model = xgb.XGBRegressor(
+        n_estimators=600,
+        max_depth=5,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        random_state=42,
+        tree_method="hist"
+    )
+    xgb_model.fit(X_train, y_train)
+    xgb_pred = xgb_model.predict(X_test)
+    _ = eval_and_print("XGBoost", y_test, xgb_pred)
+
+    # Actual vs Predicted
+    plt.figure(figsize=(8,5))
+    plt.scatter(y_test, xgb_pred, alpha=0.6)
+    plt.plot([0,100],[0,100], linestyle="--")
+    plt.xlabel("Actual WQI")
+    plt.ylabel("Predicted WQI")
+    plt.title("XGBoost: Actual vs Predicted")
+    plt.show()
+
+    # Importance
+    xgb_importance = pd.Series(xgb_model.feature_importances_, index=features).sort_values(ascending=False)
+    plt.figure(figsize=(8,5))
+    xgb_importance.plot(kind="bar")
+    plt.title("XGBoost Feature Importance")
+    plt.ylabel("Importance")
+    plt.tight_layout()
+    plt.show()
+else:
+    print("XGBoost not found. To enable, install:\n  pip install xgboost")
+
+
+# ================================
+# 5) LSTM Sequence Model (optional)
+# ================================
+# We convert the time series to sequences using a sliding window.
+
+def make_sequences(X, y, window=12):
+    # Creates (samples, window, features) and (samples,) by sliding window
+    Xs, ys = [], []
+    for i in range(len(X) - window + 1):
+        Xs.append(X[i:i+window])
+        ys.append(y[i+window-1])  # predict last point's WQI in window
+    return np.array(Xs), np.array(ys)
+
+# Scale features for neural network
+scaler = StandardScaler()
+X_all_scaled = scaler.fit_transform(df_sorted[features].values)
+y_all = df_sorted[target].values
+
+window = 12  # 12 months
+X_seq, y_seq = make_sequences(X_all_scaled, y_all, window=window)
+
+# Recompute chronological train/test split in sequence space (align with 80/20 by index)
+seq_split = int(0.8 * len(X_seq))
+X_seq_train, y_seq_train = X_seq[:seq_split], y_seq[:seq_split]
+X_seq_test,  y_seq_test  = X_seq[seq_split:], y_seq[seq_split:]
+
+print("LSTM shapes:", X_seq_train.shape, y_seq_train.shape, X_seq_test.shape, y_seq_test.shape)
+
+if HAS_TF:
+    tf.random.set_seed(42)
+
+    model = keras.Sequential([
+        layers.Input(shape=(window, X_seq_train.shape[-1])),
+        layers.LSTM(64, return_sequences=True),
+        layers.Dropout(0.2),
+        layers.LSTM(32),
+        layers.Dense(16, activation="relu"),
+        layers.Dense(1)
+    ])
+
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=1e-3), loss="mse")
+    history = model.fit(
+        X_seq_train, y_seq_train,
+        validation_split=0.1,
+        epochs=30,
+        batch_size=32,
+        verbose=0
+    )
+
+    # Plot training history
+    plt.figure(figsize=(7,4))
+    plt.plot(history.history["loss"], label="train_loss")
+    plt.plot(history.history["val_loss"], label="val_loss")
+    plt.legend()
+    plt.xlabel("Epoch")
+    plt.ylabel("MSE")
+    plt.title("LSTM Training History")
+    plt.show()
+
+    lstm_pred = model.predict(X_seq_test, verbose=0).ravel()
+    _ = eval_and_print("LSTM", y_seq_test, lstm_pred)
+
+    # Actual vs Predicted
+    plt.figure(figsize=(8,5))
+    plt.scatter(y_seq_test, lstm_pred, alpha=0.6)
+    plt.plot([0,100],[0,100], linestyle="--")
+    plt.xlabel("Actual WQI")
+    plt.ylabel("Predicted WQI")
+    plt.title("LSTM: Actual vs Predicted")
+    plt.show()
+else:
+    print("TensorFlow not found. To enable LSTM, install:\n  pip install tensorflow")
+
+
+# ================================
+# 6) Quick Leaderboard
+# ================================
+results = []
+
+# RF
+rf_mae = mean_absolute_error(y_test, rf_pred)
+rf_rmse = math.sqrt(mean_squared_error(y_test, rf_pred))
+rf_r2 = r2_score(y_test, rf_pred)
+results.append(("RandomForest", rf_mae, rf_rmse, rf_r2))
+
+# XGB
+if HAS_XGB:
+    xgb_mae = mean_absolute_error(y_test, xgb_pred)
+    xgb_rmse = math.sqrt(mean_squared_error(y_test, xgb_pred))
+    xgb_r2 = r2_score(y_test, xgb_pred)
+    results.append(("XGBoost", xgb_mae, xgb_rmse, xgb_r2))
+
+# LSTM
+if HAS_TF:
+    lstm_mae = mean_absolute_error(y_seq_test, lstm_pred)
+    lstm_rmse = math.sqrt(mean_squared_error(y_seq_test, lstm_pred))
+    lstm_r2 = r2_score(y_seq_test, lstm_pred)
+    results.append(("LSTM", lstm_mae, lstm_rmse, lstm_r2))
+
+leaderboard = pd.DataFrame(results, columns=["Model","MAE","RMSE","R2"]).sort_values("R2", ascending=False)
+leaderboard.reset_index(drop=True, inplace=True)
+leaderboard
