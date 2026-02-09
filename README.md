@@ -125,6 +125,7 @@ Integrate with IoT sensors for field applications
 
 👨‍💻 Author
 
-Name: Agbozu Ebingiye Nelvin
+Name: AGBOZU EBINGIYE NELVIN
 
 GitHub: https://github.com/Nelvinebi
+LinkedIn: https://www.linkedin.com/in/agbozu-ebi/
