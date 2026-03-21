@@ -11,7 +11,9 @@
 
 **A multi-model ML & Deep Learning pipeline integrating physicochemical and biological water parameters to predict the Water Quality Index — supporting real-time environmental monitoring and water safety compliance.**
 
-[🚀 Run Dashboard](https://wtau2tah7hfzx3a2qis6pt.streamlit.app/) · [📊 Results](#-model-results--performance) · [📐 Methodology](#-methodology) · [👤 Author](#-author)
+[Live Dashboard](https://wtau2tah7hfzx3a2qis6pt.streamlit.app/)
+
+[🚀 Run Dashboard](https://wtau2tah7hfzx3a2qis6pt.streamlit.app) · [📊 Results](#-model-results--performance) · [📐 Methodology](#-methodology) · [👤 Author](#-author)
 
 </div>
 
