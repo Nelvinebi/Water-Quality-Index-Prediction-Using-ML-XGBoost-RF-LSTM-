@@ -9,7 +9,7 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-1565C0?style=for-the-badge&logo=streamlit&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-42A5F5?style=for-the-badge)
 
-**A multi-model ML & Deep Learning pipeline integrating physicochemical and biological water parameters to predict the Water Quality Index — supporting real-time environmental monitoring and water safety compliance.**
+**A multi-model ML & Deep Learning pipeline integrating physicochemical and biological water parameters to predict the Water Quality Index supporting real-time environmental monitoring and water safety compliance.**
 
 [Live Dashboard](https://wtau2tah7hfzx3a2qis6pt.streamlit.app/)
 
@@ -119,7 +119,7 @@ Water-Quality-Index-Prediction-Using-ML-XGBoost-RF-LSTM/
 | 🦠 **Fecal Coliform** | CFU/100mL | Biological | −0.452 | Input |
 | **💧 WQI** | 0–100 | — | Target | **Output** |
 
-> ⚠️ All correlations are negative (contamination increases → WQI decreases) except **Dissolved Oxygen** (+0.606) — higher DO indicates healthier water.
+> ⚠️ All correlations are negative (contamination increases → WQI decreases) except **Dissolved Oxygen** (+0.606) higher DO indicates healthier water.
 
 ---
 
@@ -147,7 +147,7 @@ Water-Quality-Index-Prediction-Using-ML-XGBoost-RF-LSTM/
 The dataset simulates realistic seasonal and environmental dynamics:
 
 ```python
-# Seasonal patterns with noise — example: Temperature
+# Seasonal patterns with noise example: Temperature
 temp = 20 + seasonal(n, period=12, amplitude=5) + noise(σ=1.2)
 
 # WQI formula — multi-parameter composite index
@@ -273,7 +273,7 @@ Config: n_estimators=300, random_state=42, n_jobs=-1
 Split:  Temporal 80/20 (no shuffling — preserves time order)
 MAE:    1.884  |  RMSE: 2.331  |  R²: 0.712
 ```
-**Why RF?** Captures nonlinear interactions between water parameters, robust to outliers, provides native feature importance — ideal for environmental tabular data.
+**Why RF?** Captures nonlinear interactions between water parameters, robust to outliers, provides native feature importance ideal for environmental tabular data.
 
 ### ⚡ XGBoost Regressor
 ```
@@ -291,7 +291,7 @@ Window:       12 months (1 year lookback)
 Optimizer:    Adam  |  Loss: MSE  |  Epochs: 10
 Status:       Optional (pip install tensorflow)
 ```
-**Why LSTM?** Water quality exhibits strong seasonal autocorrelation — a 12-month sliding window captures annual cycles that tabular models miss.
+**Why LSTM?** Water quality exhibits strong seasonal autocorrelation a 12-month sliding window captures annual cycles that tabular models miss.
 
 ---
 
